@@ -28,7 +28,7 @@ Answer every line, even with "nothing". Skipping a line is the failure this skil
 | Object | The question | What to do |
 | --- | --- | --- |
 | Source | Was this session worth citing (a decision, a design, a choice made)? | Collect the person's own words, word for word, for every item below |
-| Decision | Did the person who decides make a choice here? | Decisions already made: one `meeting_create` for the session, each as an item of kind `decided` with the person's quote. The person reviews and records it; you never do. Not yet made: `proposal_create` |
+| Decision | Did the person who decides make a choice here? | Decided by the person you work with: `decision_record`. Include their own words as the source (`quote`, `where`), and pass `changes` for each page block it makes false, so the document changes with it. Show the `preview: true` answer first. It is in force at once. If someone else must approve it: the same call with `approvers`, which opens a proposal. Decided in a meeting with others: the `hands-off-meeting` skill. Not decided yet: `proposal_create` |
 | Contradiction | Does anything here go against an approved decision or block? | `proposal_create` (`supersede` or `change`), never a silent edit |
 | Business rule | Did a rule appear or change ("always…", "never…", "only…")? | A `business_rule` block with a code on the right BDR or rules page |
 | Page | Did an architecture choice (ADR), a business choice (BDR), a description of who uses the product (persona), a PRD section or notes take shape? Does an existing page now say something false? | `page_create` with draft blocks; `proposal_create` kind `change` for approved blocks |
