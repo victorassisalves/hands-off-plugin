@@ -1,0 +1,18 @@
+{
+  "$schema": "https://agent-plugins.org/schemas/1.0.0/plugin.schema.json",
+  "name": "hands-off",
+  "version": "0.1.0",
+  "description": "Keeps a Hands-off project up to date while you work: decisions, pages, rules, components and ideas, each with its source.",
+  "author": { "name": "Hands-off" },
+  "homepage": "https://handsoff.inventora.digital",
+  "keywords": ["decisions", "adr", "project-management", "mcp"],
+  "extensions": {
+    "com.openai": {
+      "interface": {
+        "displayName": "Hands-off",
+        "shortDescription": "Keeps your project's decisions and docs up to date",
+        "websiteURL": "https://handsoff.inventora.digital"
+      }
+    }
+  }
+}

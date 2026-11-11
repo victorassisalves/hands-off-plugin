@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "hands-off": {
+      "type": "streamable-http",
+      "url": "https://handsoff.inventora.digital/mcp",
+      "extensions": { "com.openai": { "auth": { "type": "oauth" } } }
+    }
+  }
+}

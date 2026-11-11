@@ -1,0 +1,12 @@
+{
+  "name": "hands-off",
+  "owner": { "name": "Hands-off" },
+  "description": "The Hands-off agent plugin.",
+  "plugins": [
+    {
+      "name": "hands-off",
+      "source": "./plugins/hands-off",
+      "description": "Keeps a Hands-off project up to date while you work."
+    }
+  ]
+}

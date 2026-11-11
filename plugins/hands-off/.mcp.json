@@ -1,0 +1,8 @@
+{
+  "mcpServers": {
+    "hands-off": {
+      "type": "http",
+      "url": "https://handsoff.inventora.digital/mcp"
+    }
+  }
+}
