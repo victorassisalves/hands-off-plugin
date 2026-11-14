@@ -7,6 +7,8 @@ description: Bring a Hands-off project up to date at the end of a work session, 
 
 You are the project's management assistant. Your job here: everything this session produced that belongs in Hands-off gets there, with its source, and the person can read in one look what you did.
 
+A tool not listed here is reached with `actions_find`, then `actions_run_read` (reads) or `actions_run_write` (writes).
+
 ## 1. Find the project
 
 1. Read `.handsoff.json` at the repository root if it exists: `workspace`, `project`.
@@ -19,7 +21,7 @@ Most mistakes are duplicates or contradictions of what is already there. Before 
 - `search_query` with the session's main words;
 - `page_list` (ADRs, BDRs, personas, notes, PRD);
 - `decision_list` (decided and waiting);
-- `component_list` for the parts whose files changed.
+- `actions_run_read {action: "component.list", input: {…}}` for the parts whose files changed.
 
 ## 3. Walk the whole capture map
 
@@ -31,13 +33,13 @@ Answer every line, even with "nothing". Skipping a line is the failure this skil
 | Decision | Did the person who decides make a choice here? | Decided by the person you work with: `decision_record`. Include their own words as the source (`quote`, `where`), and pass `changes` for each page block it makes false, so the document changes with it. Show the `preview: true` answer first. It is in force at once. If someone else must approve it: the same call with `approvers`, which opens a proposal. Decided in a meeting with others: the `hands-off-meeting` skill. Not decided yet: `proposal_create` |
 | Contradiction | Does anything here go against an approved decision or block? | `proposal_create` (`supersede` or `change`), never a silent edit |
 | Business rule | Did a rule appear or change ("always…", "never…", "only…")? | A `business_rule` block with a code on the right BDR or rules page |
-| Page | Did an architecture choice (ADR), a business choice (BDR), a description of who uses the product (persona), a PRD section or notes take shape? Does an existing page now say something false? | `page_create` with draft blocks; `proposal_create` kind `change` for approved blocks |
-| System and component | Did a part of the product appear, change, move or go away? Did the session's files touch a component's location? | `component_update`, `component_link` to its decisions and rules (after they have numbers), `system_touch` |
-| Idea | Did a "later", a "we could" or a follow-up come up? | `idea_create`, with the session as its source; `idea_link` to proposals |
-| Work in progress | Which roadmap idea or initiative did this session move forward, start, pause or finish? | `idea_move` it to where it really is (Now while it's being built, back to Later if it stopped), `idea_link` the proposals and decisions it produced, and name the branch or PR in its description. The roadmap should say what is being worked on today |
+| Page | Did an architecture choice (ADR), a business choice (BDR), a description of who uses the product (persona), a PRD section or notes take shape? Does an existing page now say something false? | `actions_run_write {action: "page.create", input: {type, title, blocks}}` with draft blocks; `proposal_create` kind `change` for approved blocks |
+| System and component | Did a part of the product appear, change, move or go away? Did the session's files touch a component's location? | `actions_run_write {action: "component.update", input: {…}}`, `actions_run_write {action: "component.link", input: {component, to}}` to its decisions and rules (after they have numbers), `actions_run_write {action: "system.touch", input: {decision, system}}` |
+| Idea | Did a "later", a "we could" or a follow-up come up? | `actions_run_write {action: "idea.create", input: {title, source}}`, with the session as its source; `actions_run_write {action: "idea.link", input: {idea, numbers}}` to proposals |
+| Work in progress | Which roadmap idea or initiative did this session move forward, start, pause or finish? | `actions_run_write {action: "idea.move", input: {idea, to}}` it to where it really is (Now while it's being built, back to Later if it stopped), `actions_run_write {action: "idea.link", input: {idea, numbers}}` the proposals and decisions it produced, and name the branch or PR in its description. The roadmap should say what is being worked on today |
 | Open question | Is there a choice nobody has made yet? | A draft block under "Open questions" on the relevant ADR or BDR. It becomes a proposal when someone chooses |
-| Version | Does something here belong in the planned version? | `version_add_decisions`, only if the person said so |
-| Person | Did someone take a role (decides, is consulted)? | `stakeholder_update` |
+| Version | Does something here belong in the planned version? | `actions_run_write {action: "version.add_decisions", input: {version, decisions}}`, only if the person said so |
+| Person | Did someone take a role (decides, is consulted)? | `actions_run_write {action: "stakeholder.update", input: {…}}` |
 | Drift | Did the session reveal something that should already be in Hands-off and isn't (an ADR or PRD only in the repository, a component missing from the map)? | An idea flagged as catch-up, or the page itself if the person asks |
 
 Not worth recording: a refactor, a typo, a config value nobody would ask about. A decision is worth it when someone could ask "why is it like this?" months from now and the answer isn't in the code.

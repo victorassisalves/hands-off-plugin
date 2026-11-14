@@ -58,9 +58,11 @@ const SHELL_TOOLS = new Set(["Bash", "shell", "exec_command"]);
 // A Hands-off MCP tool is named <object>_<verb>; it writes when its verb is one of these.
 const WRITE_VERBS = new Set([
   "create", "update", "edit", "move", "link", "unlink", "connect", "disconnect", "touch", "untouch", "archive", "restore",
-  "deprecate", "record", "release", "redact",
+  "deprecate", "record", "release", "redact", "withdraw", "revoke", "pin", "unpin",
 ]);
 const TWO_WORD_WRITE_VERBS = ["add_decisions", "remove_decisions"];
+// The Hands-off MCP door that runs a write action by name; actions_run_read and actions_find never write.
+const WRITE_DOOR = "actions_run_write";
 
 /** Whether an MCP tool name `<object>_<verb>` has a write verb (and a non-empty object before it). */
 const isWriteTool = (tool) => {
@@ -252,7 +254,11 @@ export function classifyTool(input, link) {
     const sep = name.lastIndexOf("__");
     const server = name.slice(5, sep);
     const tool = name.slice(sep + 2);
-    if (sep > 5 && server.length > 0 && isWriteTool(tool) && toolInput.preview !== true && !responseFailed(input.tool_response)) {
+    // The write door (decision 77) runs the tool its `action` names ("idea.create" or "idea_create") with `input`.
+    const viaDoor = tool === WRITE_DOOR;
+    const action = viaDoor ? (typeof toolInput.action === "string" ? toolInput.action.replaceAll(".", "_") : "") : tool;
+    const actionInput = viaDoor ? (isObject(toolInput.input) ? toolInput.input : {}) : toolInput;
+    if (sep > 5 && server.length > 0 && isWriteTool(action) && actionInput.preview !== true && !responseFailed(input.tool_response)) {
       const answer = handsOffResult(input.tool_response);
       result.recorded = answer !== undefined && answer.data.preview !== true && placeIsLinked(answer.data.place, link);
     }
