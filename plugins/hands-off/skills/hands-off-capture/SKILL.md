@@ -37,10 +37,12 @@ Answer every line, even with "nothing". Skipping a line is the failure this skil
 | System and component | Did a part of the product appear, change, move or go away? Did the session's files touch a component's location? | `actions_run_write {action: "component.update", input: {…}}`, `actions_run_write {action: "component.link", input: {component, to}}` to its decisions and rules (after they have numbers), `actions_run_write {action: "system.touch", input: {decision, system}}` |
 | Idea | Did a "later", a "we could" or a follow-up come up? | `actions_run_write {action: "idea.create", input: {title, source}}`, with the session as its source; `actions_run_write {action: "idea.link", input: {idea, numbers}}` to proposals |
 | Work in progress | Which roadmap idea or initiative did this session move forward, start, pause or finish? | `actions_run_write {action: "idea.move", input: {idea, to}}` it to where it really is (Now while it's being built, back to Later if it stopped), `actions_run_write {action: "idea.link", input: {idea, numbers}}` the proposals and decisions it produced, and name the branch or PR in its description. The roadmap should say what is being worked on today |
-| Open question | Is there a choice nobody has made yet? | A draft block under "Open questions" on the relevant ADR or BDR. It becomes a proposal when someone chooses |
+| Open question | Is there a choice nobody has made yet? | A `question` block on the relevant ADR or BDR (`page_edit` op `insert`, type `question`; it starts open). When you touch a page that still has old draft blocks under "Open questions", convert each one to a `question` block. It becomes a proposal when someone chooses |
 | Version | Does something here belong in the planned version? | `actions_run_write {action: "version.add_decisions", input: {version, decisions}}`, only if the person said so |
 | Person | Did someone take a role (decides, is consulted)? | `actions_run_write {action: "stakeholder.update", input: {…}}` |
 | Drift | Did the session reveal something that should already be in Hands-off and isn't (an ADR or PRD only in the repository, a component missing from the map)? | An idea flagged as catch-up, or the page itself if the person asks |
+
+When a choice answers an open question, answer it in the `question` block itself: `page_edit` with op `answer` (`block`, `answer`, and `decision` when a decision settled it). There is no answer button on screen; an answered question can't be answered again.
 
 Not worth recording: a refactor, a typo, a config value nobody would ask about. A decision is worth it when someone could ask "why is it like this?" months from now and the answer isn't in the code.
 
