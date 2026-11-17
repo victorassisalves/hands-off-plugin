@@ -5,7 +5,7 @@
       { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/session-start.mjs\"" }] }
     ],
     "PostToolUse": [
-      { "matcher": "*", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.mjs\"" }] }
+      { "matcher": "^(?:Edit|Write|MultiEdit|NotebookEdit|Bash|shell|exec_command|apply_patch|mcp__.+__(?:[^_]+(?:_[^_]+)*_(?:create|update|edit|move|link|unlink|connect|disconnect|touch|untouch|archive|restore|deprecate|record|release|redact|withdraw|revoke|pin|unpin|add_decisions|remove_decisions)|actions_run_write))$", "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/post-tool-use.mjs\"" }] }
     ],
     "Stop": [
       { "hooks": [{ "type": "command", "command": "node \"${CLAUDE_PLUGIN_ROOT}/hooks/stop.mjs\"" }] }

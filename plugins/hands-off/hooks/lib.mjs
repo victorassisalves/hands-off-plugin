@@ -64,6 +64,21 @@ const TWO_WORD_WRITE_VERBS = ["add_decisions", "remove_decisions"];
 // The Hands-off MCP door that runs a write action by name; actions_run_read and actions_find never write.
 const WRITE_DOOR = "actions_run_write";
 
+const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
+/**
+ * The PostToolUse matcher in hooks/hooks.json (which must use exactly this string): the file and shell tools, apply_patch,
+ * and an MCP tool `mcp__<server>__<object>_<write verb>` or the write door, under any server. Anchored, with no
+ * lookaround or backreferences, so Claude Code (JavaScript) and Codex (Rust's regex crate) read it the same way. The
+ * object part has no leading, trailing or doubled underscore, as classifyTool splits the name at its last "__".
+ */
+export const POST_TOOL_USE_MATCHER = (() => {
+  const object = "[^_]+(?:_[^_]+)*";
+  const verbs = [...WRITE_VERBS, ...TWO_WORD_WRITE_VERBS].map(escapeRegExp).join("|");
+  const builtIn = [...Object.keys(FILE_TOOLS), ...SHELL_TOOLS, "apply_patch"].map(escapeRegExp).join("|");
+  return `^(?:${builtIn}|mcp__.+__(?:${object}_(?:${verbs})|${escapeRegExp(WRITE_DOOR)}))$`;
+})();
+
 /** Whether an MCP tool name `<object>_<verb>` has a write verb (and a non-empty object before it). */
 const isWriteTool = (tool) => {
   for (const verb of TWO_WORD_WRITE_VERBS) {

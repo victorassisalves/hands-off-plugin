@@ -61,6 +61,7 @@ Weak evidence is a label, not a reason to skip. But your own inference never bec
 - Use an `idempotencyKey` on every write, built from the session and the item, so a retry never writes twice.
 - Quotes are the person's words, never your paraphrase. Times you don't know are approximate: say so in the title.
 - Never approve anything. Only a person approves.
+- When a proposal waits on the person you work with, show it with `proposal_get`. In Claude (claude.ai and the Desktop Chat tab), that result appears to them as a Hands-off card with its own Approve and Reject buttons: tell them to answer in the card, and don't say there is no card. Where the card shows only "Open in browser", or no card shows at all (Claude Code, the terminal), give them the proposal's link. Never call the card's own tools, and never answer for them.
 
 ## 6. Receipt
 
