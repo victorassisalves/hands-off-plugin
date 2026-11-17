@@ -63,12 +63,15 @@ const WRITE_VERBS = new Set([
 const TWO_WORD_WRITE_VERBS = ["add_decisions", "remove_decisions"];
 // The Hands-off MCP door that runs a write action by name; actions_run_read and actions_find never write.
 const WRITE_DOOR = "actions_run_write";
+// The read door: never a write, but a complete hands-off-watch read through it records the watch window (item 83).
+const READ_DOOR = "actions_run_read";
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 /**
  * The PostToolUse matcher in hooks/hooks.json (which must use exactly this string): the file and shell tools, apply_patch,
- * and an MCP tool `mcp__<server>__<object>_<write verb>` or the write door, under any server. Anchored, with no
+ * and an MCP tool `mcp__<server>__<object>_<write verb>`, the write door or the read door (a hands-off-watch read), under
+ * any server. Anchored, with no
  * lookaround or backreferences, so Claude Code (JavaScript) and Codex (Rust's regex crate) read it the same way. The
  * object part has no leading, trailing or doubled underscore, as classifyTool splits the name at its last "__".
  */
@@ -76,7 +79,7 @@ export const POST_TOOL_USE_MATCHER = (() => {
   const object = "[^_]+(?:_[^_]+)*";
   const verbs = [...WRITE_VERBS, ...TWO_WORD_WRITE_VERBS].map(escapeRegExp).join("|");
   const builtIn = [...Object.keys(FILE_TOOLS), ...SHELL_TOOLS, "apply_patch"].map(escapeRegExp).join("|");
-  return `^(?:${builtIn}|mcp__.+__(?:${object}_(?:${verbs})|${escapeRegExp(WRITE_DOOR)}))$`;
+  return `^(?:${builtIn}|mcp__.+__(?:${object}_(?:${verbs})|${escapeRegExp(WRITE_DOOR)}|${escapeRegExp(READ_DOOR)}))$`;
 })();
 
 /** Whether an MCP tool name `<object>_<verb>` has a write verb (and a non-empty object before it). */
@@ -217,11 +220,8 @@ const parseJson = (text) => {
   }
 };
 
-/**
- * Finds the Hands-off result in a tool_response: the parsed object itself, its structuredContent, the JSON text of an
- * MCP content item (on an object's `content` or an array), or a JSON string. The first with data.place.project.slug.
- */
-const handsOffResult = (response) => {
+/** The parsed candidates of a tool_response: the object, its structuredContent, the JSON text of content items, a JSON string. */
+const answerCandidates = (response) => {
   const candidates = [];
   if (isObject(response)) {
     candidates.push(response);
@@ -235,8 +235,14 @@ const handsOffResult = (response) => {
     }
   }
   if (typeof response === "string") candidates.push(parseJson(response));
-  return candidates.find(hasPlace);
+  return candidates;
 };
+
+/**
+ * Finds the Hands-off result in a tool_response: the parsed object itself, its structuredContent, the JSON text of an
+ * MCP content item (on an object's `content` or an array), or a JSON string. The first with data.place.project.slug.
+ */
+const handsOffResult = (response) => answerCandidates(response).find(hasPlace);
 
 /** With a link, the answer's place must be the linked workspace and project (any case); without one, any place counts. */
 const placeIsLinked = (place, link) => {
@@ -279,6 +285,36 @@ export function classifyTool(input, link) {
     }
   }
   return result;
+}
+
+/**
+ * The events of a complete hands-off-watch read of the linked project, or null for anything else. Complete means: the
+ * read door running activity.list (or activity_list) with `from`, peopleOnly true, type proposals_and_approvals and no
+ * other filter (only `project`, `workspace` and `limit` may come with them; a cursor, person, aiOnly, channel, to or any
+ * other key narrows the read), answered with data.events, data.next null and data.place in the linked project. Without
+ * a link, null.
+ */
+const WATCH_READ_KEYS = new Set(["from", "peopleOnly", "type", "project", "workspace", "limit"]);
+
+export function watchRead(input, link) {
+  if (!isObject(input) || !isObject(link) || typeof input.tool_name !== "string") return null;
+  const name = input.tool_name;
+  if (!name.startsWith("mcp__")) return null;
+  const sep = name.lastIndexOf("__");
+  if (sep <= 5 || name.slice(sep + 2) !== READ_DOOR) return null;
+  const toolInput = isObject(input.tool_input) ? input.tool_input : {};
+  if (toolInput.action !== "activity.list" && toolInput.action !== "activity_list") return null;
+  const args = toolInput.input;
+  if (!isObject(args)) return null;
+  if (typeof args.from !== "string" || !args.from) return null;
+  if (args.peopleOnly !== true || args.type !== "proposals_and_approvals") return null;
+  if (Object.keys(args).some((k) => !WATCH_READ_KEYS.has(k))) return null;
+  if (responseFailed(input.tool_response)) return null;
+  const answer = answerCandidates(input.tool_response).find(
+    (c) => hasPlace(c) && Array.isArray(c.data.events) && c.data.next === null,
+  );
+  if (!answer || !placeIsLinked(answer.data.place, link)) return null;
+  return answer.data.events.filter((e) => isObject(e) && typeof e.at === "string" && e.at !== "");
 }
 
 // --- session state ----------------------------------------------------------------------------------------------
@@ -401,6 +437,95 @@ export function lastRecordedAt(dir, root) {
   return isObject(data) && data.root === resolve(root) && typeof data.lastRecordedAt === "string" ? data.lastRecordedAt : null;
 }
 
+// --- the watch window (item 83, decision 83) ---------------------------------------------------------------------
+// An event exactly at the window's boundary is processed exactly once: the state keeps the `at` of the newest event seen
+// (lastAt) and the keys of the events seen at that instant (seenAtLast); the next read starts from lastAt inclusive and
+// skips exactly those keys.
+
+/** An activity event's key: at|action|target label|who (a null target or who is empty). */
+export function watchKey(event) {
+  const e = isObject(event) ? event : {};
+  const target = isObject(e.target) && typeof e.target.label === "string" ? e.target.label : "";
+  const who = typeof e.who === "string" ? e.who : "";
+  return `${e.at ?? ""}|${e.action ?? ""}|${target}|${who}`;
+}
+
+/** Compares two ISO instants: by time when both parse, else as strings. */
+const compareAt = (a, b) => {
+  const x = Date.parse(a);
+  const y = Date.parse(b);
+  if (Number.isFinite(x) && Number.isFinite(y)) return x - y;
+  return a < b ? -1 : a > b ? 1 : 0;
+};
+
+const readWatch = (s) => {
+  if (!isObject(s) || typeof s.lastAt !== "string" || !s.lastAt || !Array.isArray(s.seenAtLast)) return null;
+  return { lastAt: s.lastAt, seenAtLast: [...new Set(s.seenAtLast.filter((k) => typeof k === "string"))] };
+};
+
+const watchEvents = (events) => (Array.isArray(events) ? events.filter((e) => isObject(e) && typeof e.at === "string" && e.at) : []);
+
+/** The watch state after a read: { lastAt, seenAtLast[] }; previous (or null) when the read has no newer event. */
+export function nextWatchState(previous, events) {
+  const prev = readWatch(previous);
+  const list = watchEvents(events);
+  if (!list.length) return prev;
+  let newest = list[0].at;
+  for (const e of list) if (compareAt(e.at, newest) > 0) newest = e.at;
+  const atNewest = list.filter((e) => compareAt(e.at, newest) === 0).map(watchKey);
+  if (!prev) return { lastAt: newest, seenAtLast: [...new Set(atNewest)] };
+  const order = compareAt(newest, prev.lastAt);
+  if (order < 0) return prev;
+  if (order === 0) return { lastAt: prev.lastAt, seenAtLast: [...new Set([...prev.seenAtLast, ...atNewest])] };
+  return { lastAt: newest, seenAtLast: [...new Set(atNewest)] };
+}
+
+/** The events of a read not processed yet: newer than lastAt, or at lastAt with a key not in seenAtLast. */
+export function newEvents(state, events) {
+  const s = readWatch(state);
+  const list = watchEvents(events);
+  if (!s) return list;
+  const seen = new Set(s.seenAtLast);
+  return list.filter((e) => {
+    const order = compareAt(e.at, s.lastAt);
+    return order > 0 || (order === 0 && !seen.has(watchKey(e)));
+  });
+}
+
+// Apart from the record markRecorded writes: one file per repository root plus workspace plus project under watch/.
+// The link (optional) names the project; without it, the root's own .handsoff.json does, and with no link there either,
+// the root alone keys the state.
+const rootLink = (root) => {
+  const link = findLink(root);
+  return link && link.root === resolve(root) ? link : null;
+};
+
+const watchPlace = (root, link) => {
+  const l = isObject(link) && typeof link.workspace === "string" && typeof link.project === "string" ? link : rootLink(root);
+  return { root: resolve(root), workspace: l ? l.workspace : null, project: l ? l.project : null };
+};
+
+const watchFile = (dir, place) => {
+  const id = place.workspace === null ? place.root : `${place.root}|${place.workspace}|${place.project}`;
+  return join(dir, "watch", `${createHash("sha256").update(id).digest("hex").slice(0, 32)}.json`);
+};
+
+/** The watch state of the repository root's linked project (or of `link`'s) on this machine, or null. */
+export function loadWatch(dir, root, link) {
+  const place = watchPlace(root, link);
+  const data = readJson(watchFile(dir, place));
+  if (!isObject(data) || data.root !== place.root) return null;
+  if ((data.workspace ?? null) !== place.workspace || (data.project ?? null) !== place.project) return null;
+  return readWatch(data);
+}
+
+export function saveWatch(dir, root, state, link) {
+  const s = readWatch(state);
+  if (!s) return;
+  const place = watchPlace(root, link);
+  writeJson(watchFile(dir, place), { ...place, ...s });
+}
+
 // --- decisions and context ---------------------------------------------------------------------------------------
 
 const inside = (root, file) => {
@@ -457,7 +582,21 @@ export function stopDecision({ link, state, input, git }) {
   return { decision: "block", reason };
 }
 
-export function sessionStartContext({ link, lastRecordedAt: last, commitsSince }) {
+/** The session-start line that tells the agent where hands-off-watch reads from. */
+const watchLine = (watch, last) => {
+  const w = readWatch(watch);
+  if (w) {
+    const n = w.seenAtLast.length;
+    const skip = n === 0
+      ? "nothing to skip"
+      : `skip the ${plural(n, "event")} already seen at that instant (${w.seenAtLast.join("; ")})`;
+    return `To learn what people did in Hands-off since the last check, run the hands-off-watch skill: read from ${w.lastAt} and ${skip}.`;
+  }
+  if (last) return `To learn what people did in Hands-off since the last capture, run the hands-off-watch skill: read from ${last}.`;
+  return `To learn what people did in Hands-off lately, run the hands-off-watch skill: no check is recorded on this machine yet, so read the last 24 hours.`;
+};
+
+export function sessionStartContext({ link, lastRecordedAt: last, commitsSince, watch }) {
   if (!link) return null;
   const lines = [
     `This repository is linked to the Hands-off project ${link.workspace}/${link.project}${link.url ? ` (${link.url})` : ""}.`,
@@ -466,6 +605,7 @@ export function sessionStartContext({ link, lastRecordedAt: last, commitsSince }
     last
       ? `${commitsSince ?? 0} commits since the last capture (${String(last).slice(0, 10)}).`
       : `No capture is recorded on this machine yet.`,
+    watchLine(watch, last),
   ];
   return lines.join(" ");
 }

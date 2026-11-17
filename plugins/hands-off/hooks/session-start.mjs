@@ -1,7 +1,7 @@
 // SessionStart hook: in a repository linked to Hands-off, tells the agent which project it is and how much changed
-// since the last capture on this machine, and saves the session's git baseline (HEAD, the paths already dirty and their content fingerprints) so
+// since the last capture on this machine, where hands-off-watch reads from next, and saves the session's git baseline (HEAD, the paths already dirty and their content fingerprints) so
 // the stop gate also sees changes made by shell commands. Without a link, prints nothing.
-import { dataDir, findLink, fingerprints, gitSnapshot, lastRecordedAt, loadState, runGit, runHook, saveState, sessionStartContext } from "./lib.mjs";
+import { dataDir, findLink, fingerprints, gitSnapshot, lastRecordedAt, loadState, loadWatch, runGit, runHook, saveState, sessionStartContext } from "./lib.mjs";
 
 const commitsSince = (root, since) => {
   try {
@@ -30,7 +30,7 @@ await runHook((input) => {
   const data = dataDir(process.env);
   if (typeof input.session_id === "string" && input.session_id) saveBaseline(data, input.session_id, link.root);
   const last = lastRecordedAt(data, link.root);
-  const text = sessionStartContext({ link, lastRecordedAt: last, commitsSince: last ? commitsSince(link.root, last) : 0 });
+  const text = sessionStartContext({ link, lastRecordedAt: last, commitsSince: last ? commitsSince(link.root, last) : 0, watch: loadWatch(data, link.root, link) });
   if (!text) return null;
   return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } };
 });
