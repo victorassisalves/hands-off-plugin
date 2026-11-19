@@ -1,9 +1,10 @@
 // The hooks' shared library: pure functions the three hook scripts use. Plain Node ESM, no build, no dependencies.
 import { execFileSync } from "node:child_process";
-import { createHash } from "node:crypto";
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { tmpdir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { createHash, randomBytes } from "node:crypto";
+import { closeSync, constants as fsConstants, existsSync, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, writeFileSync, writeSync } from "node:fs";
+import { homedir, tmpdir } from "node:os";
+import { basename, dirname, isAbsolute, join, relative, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
 
 const LINK_FILE = ".handsoff.json";
 
@@ -65,6 +66,8 @@ const TWO_WORD_WRITE_VERBS = ["add_decisions", "remove_decisions"];
 const WRITE_DOOR = "actions_run_write";
 // The read door: never a write, but a complete hands-off-watch read through it records the watch window (item 83).
 const READ_DOOR = "actions_run_read";
+// The quick records (decision 95 (e)): written mid-conversation, they neither release the stop gate nor mark a capture.
+const QUICK_ACTIONS = new Set(["decision_record", "check_record"]);
 
 const escapeRegExp = (s) => s.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
@@ -83,7 +86,7 @@ export const POST_TOOL_USE_MATCHER = (() => {
 })();
 
 /** Whether an MCP tool name `<object>_<verb>` has a write verb (and a non-empty object before it). */
-const isWriteTool = (tool) => {
+export const isWriteTool = (tool) => {
   for (const verb of TWO_WORD_WRITE_VERBS) {
     if (tool.endsWith(`_${verb}`) && tool.length > verb.length + 1) return true;
   }
@@ -119,7 +122,7 @@ const patchFiles = (text) => {
 };
 
 /** Splits a shell script into commands (on ; && || | & ( ) and newlines), each a list of words, honouring quotes. */
-const parseShell = (script) => {
+export const parseShell = (script) => {
   const commands = [];
   let words = [];
   let word = "";
@@ -200,7 +203,7 @@ const commandCommits = (command) => {
 };
 
 /** Whether a tool_response says the call failed: isError / is_error on the object, or isError on an item of an array. */
-const responseFailed = (response) => {
+export const responseFailed = (response) => {
   if (Array.isArray(response)) return response.some((item) => isObject(item) && (item.isError === true || item.is_error === true));
   return isObject(response) && (response.isError === true || response.is_error === true);
 };
@@ -254,10 +257,10 @@ const placeIsLinked = (place, link) => {
 /**
  * Classifies a PostToolUse input: the files it changed, whether it ran `git commit`, and whether it wrote to Hands-off
  * (a successful MCP write, not a preview, whose Hands-off answer places it in the linked project, or anywhere without
- * `link`).
+ * `link`). `quick` is such a write that is decision.record or check.record: a quick record, never `recorded`.
  */
 export function classifyTool(input, link) {
-  const result = { files: [], commit: false, recorded: false };
+  const result = { files: [], commit: false, recorded: false, quick: false };
   if (!isObject(input) || typeof input.tool_name !== "string") return result;
   const name = input.tool_name;
   const toolInput = isObject(input.tool_input) ? input.tool_input : {};
@@ -281,10 +284,28 @@ export function classifyTool(input, link) {
     const actionInput = viaDoor ? (isObject(toolInput.input) ? toolInput.input : {}) : toolInput;
     if (sep > 5 && server.length > 0 && isWriteTool(action) && actionInput.preview !== true && !responseFailed(input.tool_response)) {
       const answer = handsOffResult(input.tool_response);
-      result.recorded = answer !== undefined && answer.data.preview !== true && placeIsLinked(answer.data.place, link);
+      const ok = answer !== undefined && answer.data.preview !== true && placeIsLinked(answer.data.place, link);
+      // A quick record (decision 95 (e)) is one decision or check mid-conversation: it doesn't replace the capture map.
+      result.quick = ok && QUICK_ACTIONS.has(action.replaceAll(".", "_"));
+      result.recorded = ok && !result.quick;
     }
   }
   return result;
+}
+
+const STALE = /\btools_out_of_date:/;
+const staleIn = (text) => typeof text === "string" && STALE.test(text);
+
+/**
+ * Whether an MCP tool's answer carries the server's tools_out_of_date notice (item 95, slice 4a): a Hands-off answer
+ * (with data.place) whose last warning is it, or a Hands-off error JSON whose message carries it (a PostToolUseFailure's
+ * `error` too).
+ */
+export function toolsOutOfDate(input) {
+  if (!isObject(input) || typeof input.tool_name !== "string" || !input.tool_name.startsWith("mcp__")) return false;
+  const candidates = input.hook_event_name === "PostToolUseFailure" ? [parseJson(input.error)] : answerCandidates(input.tool_response);
+  return candidates.some((c) => (hasPlace(c) && Array.isArray(c.warnings) && staleIn(c.warnings.at(-1))) ||
+    (isObject(c) && isObject(c.error) && typeof c.error.code === "string" && staleIn(c.error.message)));
 }
 
 /**
@@ -578,7 +599,8 @@ export function stopDecision({ link, state, input, git }) {
   const reason =
     `This session changed the repository linked to the Hands-off project ${link.workspace}/${link.project}: ` +
     `${changed.join(" and ")}${list}, and nothing was recorded in Hands-off yet. Before finishing, run the ` +
-    `hands-off-capture skill: walk the whole capture map and end with the receipt.`;
+    `hands-off-capture skill: walk the whole capture map and end with the receipt. A quick record doesn't replace ` +
+    `the capture map.`;
   return { decision: "block", reason };
 }
 
@@ -649,4 +671,330 @@ export async function runHook(body) {
   }
   if (out !== undefined && out !== null) process.stdout.write(JSON.stringify(out) + "\n");
   process.exitCode = 0;
+}
+
+// --- the permissions write (item 95, slice 4b) -------------------------------------------------------------------
+
+const SERVER_RULE = "mcp__plugin_hands-off_hands-off";
+/** The rules offered (PM call 13): decision_record, the core reads, actions_find and actions_run_read. Never actions_run_write. */
+export const OFFERED_RULES = ["decision_record", "context_get", "project_get", "page_list", "page_get", "proposal_get", "proposal_impact",
+  "decision_list", "search_query", "search_trail", "actions_find", "actions_run_read"].map((n) => `${SERVER_RULE}__${n}`);
+const SETTINGS_LINE = ".claude/settings.local.json";
+const ALLOW_SCRIPT = join(dirname(fileURLToPath(import.meta.url)), "allow-permissions.mjs");
+const LOCK_WAIT_MS = 2000;
+const LOCK_STALE_MS = 10000;
+const MAX_CHECKS = 4; // the first hash check, then one after each of 3 re-merges
+
+const gitOk = (root, args) => {
+  try {
+    return runGit(root, args).trim() || true;
+  } catch {
+    return false;
+  }
+};
+
+/** What git does with <root>/.claude/settings.local.json: "tracked", "ignored", "unignored" or "outside" (git). */
+export function settingsGitState(root) {
+  if (gitOk(root, ["rev-parse", "--is-inside-work-tree"]) !== "true") return "outside";
+  if (gitOk(root, ["ls-files", "--error-unmatch", SETTINGS_LINE])) return "tracked";
+  return gitOk(root, ["check-ignore", "-q", SETTINGS_LINE]) ? "ignored" : "unignored";
+}
+
+const allowList = (file) => {
+  const v = readJson(file);
+  return isObject(v) && isObject(v.permissions) && Array.isArray(v.permissions.allow) ? v.permissions.allow : [];
+};
+const quote = (s) => `'${String(s).replace(/'/g, "'\\''")}'`;
+
+/**
+ * The session-start offer (decision 95 (g)): once per linked root on this machine, marked in <data>/offers.json whatever
+ * the answer. Reads the three settings files, never writes them. Returns the context line, or null with nothing missing.
+ */
+export function permissionsOffer(data, root, home = homedir()) {
+  const file = join(data, "offers.json");
+  const offers = readJson(file);
+  const roots = isObject(offers) && Array.isArray(offers.roots) ? offers.roots : [];
+  if (roots.includes(root)) return null;
+  writeJson(file, { roots: [...roots, root] });
+  const allowed = new Set([join(root, SETTINGS_LINE), join(root, ".claude", "settings.json"), join(home, ".claude", "settings.json")].flatMap(allowList));
+  const missing = allowed.has(SERVER_RULE) ? [] : OFFERED_RULES.filter((r) => !allowed.has(r));
+  if (!missing.length) return null;
+  const settings = join(root, SETTINGS_LINE);
+  const state = settingsGitState(root);
+  if (state === "tracked") {
+    return `Hands-off permissions: ${missing.join(", ")} aren't allowed yet, but nothing will be written to ${settings}: git tracks that file, and adding it to .gitignore doesn't untrack it. Tell the person once; they can untrack it themselves (git rm --cached ${SETTINGS_LINE}) and ask again.`;
+  }
+  const git = {
+    ignored: "git ignores it, so nothing else changes",
+    unignored: `git would commit and share it, so the same yes also adds the line ${SETTINGS_LINE} to ${join(root, ".gitignore")}`,
+    outside: "it is outside git, so there is nothing to ignore",
+  }[state];
+  const command = `node ${quote(ALLOW_SCRIPT)} --root ${quote(root)} ${missing.map((r) => `--rule ${r}`).join(" ")}${state === "unignored" ? " --gitignore" : ""}`;
+  return `Hands-off permissions: ask the person once (hands-off-capture, Permissions) whether to allow ${missing.join(", ")} without a prompt in this repository, in ${settings}; ${git}. Only after their explicit yes in this session, run: ${command}`;
+}
+
+const digest = (bytes) => (bytes ? createHash("sha256").update(bytes).digest("hex") : "absent");
+const sleep = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+const { O_RDONLY, O_RDWR, O_WRONLY, O_CREAT, O_EXCL, O_APPEND, O_NOFOLLOW, O_NONBLOCK = 0 } = fsConstants;
+const isLinkError = (e) => e?.code === "ELOOP" || e?.code === "EMLINK"; // O_NOFOLLOW on a symlink (EMLINK on FreeBSD)
+
+/**
+ * Reads a file without ever following a symlink at it: { bytes, mode } of a regular file, null when absent, false when
+ * the path is a symlink (dangling or not) or not a regular file. Opens with O_NOFOLLOW and reads through that one fd.
+ */
+const readNoFollow = (file) => {
+  let fd;
+  try {
+    fd = openSync(file, O_RDONLY | O_NOFOLLOW | O_NONBLOCK);
+  } catch (e) {
+    if (e?.code === "ENOENT") return null;
+    if (isLinkError(e)) return false;
+    throw e;
+  }
+  try {
+    const st = fstatSync(fd);
+    return st.isFile() ? { bytes: readFileSync(fd), mode: st.mode & 0o777 } : false;
+  } finally {
+    closeSync(fd);
+  }
+};
+/** The path is absent or a regular file: never a symlink, a directory or anything else. */
+const regularOrAbsent = (p) => {
+  try {
+    return lstatSync(p).isFile();
+  } catch (e) {
+    return e?.code === "ENOENT";
+  }
+};
+
+/** O_EXCL|O_NOFOLLOW writers' lock: waits up to 2 s; a lock older than 10 s (mtime) is stale and taken. Returns { content, id } (its fstat), or null. */
+const takeLock = (lock) => {
+  const until = Date.now() + LOCK_WAIT_MS;
+  for (;;) {
+    const content = JSON.stringify({ pid: process.pid, at: new Date().toISOString() });
+    let fd = null;
+    try {
+      fd = openSync(lock, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, 0o600);
+    } catch (e) {
+      if (e.code !== "EEXIST") throw e;
+    }
+    if (fd !== null) {
+      try {
+        writeSync(fd, content);
+        return { content, id: fstatSync(fd) };
+      } finally {
+        closeSync(fd);
+      }
+    }
+    try {
+      if (Date.now() - lstatSync(lock).mtimeMs > LOCK_STALE_MS) {
+        rmSync(lock, { force: true }); // removes the entry itself, never a link's target
+        continue;
+      }
+    } catch {
+      continue; // gone meanwhile: try again
+    }
+    if (Date.now() >= until) return null;
+    sleep(50);
+  }
+};
+
+/**
+ * Writes the offered Hands-off rules into <root>/.claude/settings.local.json (hooks/allow-permissions.mjs).
+ * No path it reads or writes (the settings file, .gitignore, the lock, the temp file) is ever followed through a symlink:
+ * each is opened with O_NOFOLLOW, and the settings file and (with --gitignore) .gitignore are re-checked after the lock
+ * wait, at every pass of the merge loop, right before the temp file is created (empty), after it is written and closed,
+ * after beforeCheck and right before the rename. Before the temp is created and before the rename it also re-checks that
+ * git doesn't track the settings file. Its lock and temp file are removed by identity (dev/ino), even after .claude moved.
+ * Seams for the ORDER tests: `afterRead()` under the lock after each read, `beforeCheck()` before each hash check.
+ * Returns { ok: true, added: { rules, gitignore? } } or { ok: false, message }.
+ */
+export function allowPermissions({ root, rules = [], gitignore = false } = {}, { afterRead = () => {}, beforeCheck = () => {} } = {}) {
+  const fail = (message) => ({ ok: false, message });
+  if (typeof root !== "string" || !existsSync(join(root, LINK_FILE))) return fail(`${root} has no ${LINK_FILE} at it: not a linked repository root; nothing written`);
+  const bad = rules.filter((r) => !OFFERED_RULES.includes(r));
+  if (bad.length || !rules.length) return fail(`not offered Hands-off rules: ${bad.join(", ") || "none given"}; nothing written`);
+  const outside = (what) => fail(`${what} is a symlink or resolves outside the repository ${root}; nothing written`);
+  const notRegular = (what) => fail(`${what} is a symlink or not a regular file, or resolves outside the repository ${root}; nothing written`);
+  const isLink = (p) => { try { return lstatSync(p).isSymbolicLink(); } catch { return false; } };
+  const claudeDir = join(root, ".claude");
+  const gitignoreFile = join(root, ".gitignore");
+  if (isLink(claudeDir)) return outside(claudeDir);
+  for (const p of [join(root, SETTINGS_LINE), ...(gitignore ? [gitignoreFile] : [])]) if (!regularOrAbsent(p)) return notRegular(p);
+  const realRoot = realpathSync(root);
+  const realDir = existsSync(claudeDir) ? realpathSync(claudeDir) : join(realRoot, ".claude");
+  const rel = relative(realRoot, realDir);
+  if (!rel || rel.startsWith("..") || isAbsolute(rel)) return outside(claudeDir);
+  const tracked = () => fail(`${SETTINGS_LINE} is tracked (committed) by git, and .gitignore doesn't untrack it; nothing written`);
+  const state = settingsGitState(root);
+  if (state === "tracked") return tracked();
+  if (state === "unignored" && !gitignore) return fail(`git doesn't ignore ${SETTINGS_LINE} and --gitignore wasn't given; nothing written`);
+  const added = {};
+  const settings = join(realDir, "settings.local.json");
+  mkdirSync(realDir, { recursive: true });
+  const idOf = (p) => { try { return lstatSync(p); } catch { return null; } };
+  const seen = idOf(claudeDir);
+  if (!seen || seen.isSymbolicLink() || !seen.isDirectory()) return outside(claudeDir);
+  const changed = fail(`the destination ${claudeDir} changed or is outside the repository ${root}; nothing written`);
+  /** <root>/.claude is still the real directory validated above (same dev/ino), and still inside realpath(root). */
+  const verifyDir = () => {
+    const now = idOf(claudeDir);
+    if (!now || now.isSymbolicLink() || !now.isDirectory() || now.dev !== seen.dev || now.ino !== seen.ino) return false;
+    try {
+      const r = relative(realpathSync(root), realpathSync(claudeDir));
+      return Boolean(r) && !r.startsWith("..") && !isAbsolute(r);
+    } catch {
+      return false;
+    }
+  };
+  const guarded = [settings, ...(gitignore ? [gitignoreFile] : [])];
+  /** verifyDir, and the settings file and (with --gitignore) .gitignore absent or regular files: null, or the refusal. */
+  const verify = () => {
+    if (!verifyDir()) return changed;
+    for (const p of guarded) if (!regularOrAbsent(p)) return notRegular(p);
+    return null;
+  };
+  /** Appends the line to .gitignore through one O_NOFOLLOW fd (created if missing, content kept): null, or the refusal. */
+  const appendGitignore = () => {
+    let fd;
+    try {
+      fd = openSync(gitignoreFile, O_RDWR | O_APPEND | O_CREAT | O_NOFOLLOW | O_NONBLOCK, 0o644);
+    } catch (e) {
+      if (isLinkError(e)) return notRegular(gitignoreFile);
+      throw e;
+    }
+    try {
+      if (!fstatSync(fd).isFile()) return notRegular(gitignoreFile);
+      const text = readFileSync(fd, "utf8");
+      writeSync(fd, `${text && !text.endsWith("\n") ? "\n" : ""}${SETTINGS_LINE}\n`);
+      return null;
+    } finally {
+      closeSync(fd);
+    }
+  };
+  const sameId = (a, b) => Boolean(a && b) && a.dev === b.dev && a.ino === b.ino;
+  /**
+   * Where this run's file `name` (created in the validated .claude) may be now: that directory's real path, and, if the
+   * directory was moved or replaced meanwhile, the real directory with its dev/ino among realpath(root)'s entries.
+   */
+  const placesOf = (name) => {
+    const dirs = [realDir];
+    try {
+      const top = realpathSync(root);
+      for (const entry of readdirSync(top)) {
+        const d = join(top, entry);
+        if (d !== realDir && sameId(idOf(d), seen) && idOf(d).isDirectory()) dirs.push(d);
+      }
+    } catch {
+      // the root itself is gone: only the recorded path is left to try
+    }
+    return dirs.map((d) => join(d, name));
+  };
+  /** Removes this run's file by identity: only an entry with the recorded dev/ino (and, given, content), never another run's. */
+  const removeOwn = (name, id, content) => {
+    for (const p of placesOf(name)) {
+      try {
+        const now = idOf(p);
+        if (!now || !now.isFile() || !sameId(now, id)) continue;
+        if (content !== undefined) {
+          const got = readNoFollow(p);
+          if (!got || got.bytes.toString("utf8") !== content) continue;
+        }
+        rmSync(p, { force: true });
+        return;
+      } catch {
+        // gone or unreadable: nothing of ours there
+      }
+    }
+  };
+  const lockName = `${basename(settings)}.hands-off.lock`;
+  const lock = join(realDir, lockName);
+  const mine = takeLock(lock);
+  if (!mine) return fail("another Hands-off permissions write is running; nothing written");
+  /** Removes this run's lock by identity (dev/ino and content), even after <root>/.claude moved; never another run's lock. */
+  const releaseLock = () => removeOwn(lockName, mine.id, mine.content);
+  let temp = null; // only ever the path this run created exclusively
+  let tempId = null;
+  const dropTemp = () => {
+    if (temp && tempId) removeOwn(basename(temp), tempId);
+    temp = null;
+    tempId = null;
+  };
+  /** Re-checked under the lock: git must not track the settings file (it may have been added meanwhile). */
+  const trackedNow = () => (gitOk(root, ["ls-files", "--error-unmatch", SETTINGS_LINE]) ? tracked() : null);
+  /** Creates a new temp file with O_CREAT|O_EXCL|O_NOFOLLOW: never follows or reuses an existing path or symlink. */
+  const openTemp = (mode) => {
+    for (let attempt = 0; ; attempt++) {
+      const path = `${settings}.${process.pid}.${randomBytes(8).toString("hex")}.tmp`;
+      try {
+        const fd = openSync(path, O_WRONLY | O_CREAT | O_EXCL | O_NOFOLLOW, mode);
+        temp = path;
+        tempId = fstatSync(fd);
+        return fd;
+      } catch (e) {
+        if (e?.code !== "EEXIST" || attempt >= 4) throw e;
+      }
+    }
+  };
+  try {
+    let refused = verify();
+    if (refused) return refused;
+    if (state === "unignored") {
+      const now = settingsGitState(root); // under the lock: another run may have added the line meanwhile
+      if (now === "tracked") return tracked();
+      if (now === "unignored") {
+        refused = appendGitignore();
+        if (refused) return refused;
+        if (settingsGitState(root) !== "ignored") return fail(`git still doesn't ignore ${SETTINGS_LINE}; settings not written`);
+        added.gitignore = SETTINGS_LINE;
+      }
+    }
+    for (let check = 0; check < MAX_CHECKS; check++) {
+      if ((refused = verify())) return refused;
+      const got = readNoFollow(settings);
+      if (got === false) return notRegular(settings);
+      const bytes = got ? got.bytes : null;
+      let value;
+      try {
+        value = bytes ? JSON.parse(bytes.toString("utf8")) : {};
+      } catch {
+        value = null;
+      }
+      const perms = isObject(value) ? value.permissions ?? {} : null;
+      if (!isObject(perms) || (perms.allow !== undefined && !Array.isArray(perms.allow))) return fail(`${settings} isn't valid JSON settings (an object with a permissions.allow list); nothing written`);
+      afterRead();
+      const allow = perms.allow ?? [];
+      const fresh = [...new Set(rules)].filter((r) => !allow.includes(r));
+      const mode = got ? got.mode : 0o600;
+      dropTemp();
+      if ((refused = verify() ?? trackedNow())) return refused; // right before the temp is created
+      const fd = openTemp(mode);
+      try {
+        fchmodSync(fd, mode); // over the umask, before any byte is written
+        if ((refused = verify())) return refused; // the empty temp is still in the validated directory
+        writeSync(fd, JSON.stringify({ ...value, permissions: { ...perms, allow: [...allow, ...fresh] } }, null, 2) + "\n");
+      } finally {
+        closeSync(fd);
+      }
+      if ((refused = verify())) return refused;
+      beforeCheck();
+      if ((refused = verify())) return refused;
+      const again = readNoFollow(settings);
+      if (again === false) return notRegular(settings);
+      if (digest(again ? again.bytes : null) !== digest(bytes)) continue; // edited meanwhile: read and merge again
+      if ((refused = verify() ?? trackedNow())) return refused;
+      try {
+        renameSync(temp, settings);
+      } catch (e) {
+        return fail(`could not write ${settings} (${e?.code ?? e?.message ?? e}); nothing written`);
+      }
+      temp = null;
+      tempId = null;
+      return { ok: true, added: { rules: fresh, ...added } };
+    }
+    return fail(`${settings} kept changing while it was merged; gave up after ${MAX_CHECKS - 1} re-merges, nothing written`);
+  } finally {
+    dropTemp();
+    releaseLock();
+  }
 }

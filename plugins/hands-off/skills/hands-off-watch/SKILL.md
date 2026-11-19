@@ -6,6 +6,7 @@ description: Learn what people did in a Hands-off project since the last check (
 # Hands-off: watch what people did
 
 A tool not listed here is reached with `actions_find`, then `actions_run_read` (reads) or `actions_run_write` (writes).
+If an answer carries `tools_out_of_date`, tell the person once to reconnect Hands-off (/mcp in Claude Code) or start a new session; until then never guess a tool's fields: use `actions_find` for the current schema.
 
 1. **Find the project** as in the `hands-off-capture` skill (`.handsoff.json`, then `context_get`).
 2. **Read since the last check.** Session start gives the instant to read from and the events already seen there; without it, use the last capture time, or the last 24 hours. Read with `actions_run_read {action: "activity.list", input: {project, from, peopleOnly: true, type: "proposals_and_approvals", limit: 50}}` (50 is the most activity.list returns).

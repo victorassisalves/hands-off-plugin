@@ -8,6 +8,7 @@ description: Work a Hands-off project's roadmap as the backlog. Read the ideas i
 The ideas in Now are the backlog (decisions 86 and 88). A session meant to work it takes the next free idea, marks that it picked it, keeps its pending items on the idea, and releases it when it stops.
 
 A tool not listed here is reached with `actions_find`, then `actions_run_read` (reads) or `actions_run_write` (writes).
+If an answer carries `tools_out_of_date`, tell the person once to reconnect Hands-off (/mcp in Claude Code) or start a new session; until then never guess a tool's fields: use `actions_find` for the current schema.
 
 ## When to claim
 
@@ -53,9 +54,11 @@ Read Now twice, each read filtered, so you never pull the whole bucket:
 
 ## 6. Finish or stop
 
-1. After merge and deploy, set it done with `actions_run_write {action: "idea.update", input: {project, idea, state: "done"}}`.
-2. Then release it with `actions_run_write {action: "idea.unclaim", input: {project, idea, sessionId}}`.
-3. Stopping before that: release the claim with the same unclaim call and leave its open items as they are, so the next session sees what is left.
+1. Merge with `gh pr merge <n> -R github.com/<owner>/<repo>` (or `--repo github.com/<owner>/<repo>`) naming this repository, or with its PR URL `gh pr merge https://github.com/<owner>/<repo>/pull/<n>`, adding only `--squash`, `--merge`, `--rebase` or `--delete-branch`: the delivery hook does not count a plain `gh pr merge <n>`, so it would not remind you of the Delivery check.
+2. After merge and deploy, set it done with `actions_run_write {action: "idea.update", input: {project, idea, state: "done"}}`.
+3. Then run the Delivery check of the `hands-off-capture` skill: it confirms done and records a delivered check for each linked decision.
+4. Then release it with `actions_run_write {action: "idea.unclaim", input: {project, idea, sessionId}}` (the Delivery check's last step).
+5. Stopping before that: release the claim with the same unclaim call and leave its open items as they are, so the next session sees what is left.
 
 ## 7. Report
 

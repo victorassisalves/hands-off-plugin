@@ -6,6 +6,7 @@ description: Find and close the drift between a repository and its Hands-off pro
 # Hands-off: catch up on drift
 
 A tool not listed here is reached with `actions_find`, then `actions_run_read` (reads) or `actions_run_write` (writes).
+If an answer carries `tools_out_of_date`, tell the person once to reconnect Hands-off (/mcp in Claude Code) or start a new session; until then never guess a tool's fields: use `actions_find` for the current schema.
 
 1. **Find the project** as in `hands-off-capture` (`.handsoff.json`, `context_get`).
 2. **Measure, before writing anything:**
