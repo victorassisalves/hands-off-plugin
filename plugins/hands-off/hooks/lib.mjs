@@ -596,7 +596,13 @@ const watchLine = (watch, last) => {
   return `To learn what people did in Hands-off lately, run the hands-off-watch skill: no check is recorded on this machine yet, so read the last 24 hours.`;
 };
 
-export function sessionStartContext({ link, lastRecordedAt: last, commitsSince, watch }) {
+/** The session-start line that gives the session id to claim a roadmap idea with (decisions 86 and 88). */
+const sessionIdLine = (sessionId) =>
+  typeof sessionId === "string" && sessionId.trim()
+    ? `Your Hands-off session id is ${sessionId.trim()}; pass it as sessionId when you claim a roadmap idea (the hands-off-backlog skill works the ideas in Now, only in a session meant to work the backlog).`
+    : `This session has no Hands-off session id from the hook: to claim a roadmap idea, make a random id (a UUID) once and reuse it as sessionId for the whole session (the hands-off-backlog skill works the ideas in Now, only in a session meant to work the backlog).`;
+
+export function sessionStartContext({ link, lastRecordedAt: last, commitsSince, watch, sessionId }) {
   if (!link) return null;
   const lines = [
     `This repository is linked to the Hands-off project ${link.workspace}/${link.project}${link.url ? ` (${link.url})` : ""}.`,
@@ -606,6 +612,7 @@ export function sessionStartContext({ link, lastRecordedAt: last, commitsSince, 
       ? `${commitsSince ?? 0} commits since the last capture (${String(last).slice(0, 10)}).`
       : `No capture is recorded on this machine yet.`,
     watchLine(watch, last),
+    sessionIdLine(sessionId),
   ];
   return lines.join(" ");
 }

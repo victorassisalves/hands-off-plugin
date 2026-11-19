@@ -30,7 +30,7 @@ await runHook((input) => {
   const data = dataDir(process.env);
   if (typeof input.session_id === "string" && input.session_id) saveBaseline(data, input.session_id, link.root);
   const last = lastRecordedAt(data, link.root);
-  const text = sessionStartContext({ link, lastRecordedAt: last, commitsSince: last ? commitsSince(link.root, last) : 0, watch: loadWatch(data, link.root, link) });
+  const text = sessionStartContext({ link, lastRecordedAt: last, commitsSince: last ? commitsSince(link.root, last) : 0, watch: loadWatch(data, link.root, link), sessionId: input.session_id });
   if (!text) return null;
   return { hookSpecificOutput: { hookEventName: "SessionStart", additionalContext: text } };
 });
